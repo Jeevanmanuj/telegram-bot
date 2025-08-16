@@ -1,96 +1,108 @@
+import os
 import telebot
-import json
-import os
+from telebot import types
+from flask import Flask
 
-# 🔹 Replace with your bot token
-import os
-TOKEN = os.getenv("BOT_TOKEN")
+# Get token from environment variable
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
 
-INDEX_FILE = "file_index.json"
+# In-memory store (dictionary)
+files_db = {}
 
-# Load saved file_ids from disk
-if os.path.exists(INDEX_FILE):
-    with open(INDEX_FILE, "r") as f:
-        saved_files = json.load(f)
-else:
-    saved_files = {}
+# --- BOT COMMANDS ---
 
-# Save file_ids back to disk
-def save_index():
-    with open(INDEX_FILE, "w") as f:
-        json.dump(saved_files, f)
-
-# --- Start ---
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message,
-                 "👋 Welcome!\n\n"
-                 "Use these commands:\n"
-                 "/save <key> + attach ZIP\n"
-                 "/list - show saved keys\n"
-                 "/get <key> - retrieve ZIP\n"
-                 "/delete <key> - remove ZIP")
+    bot.reply_to(
+        message,
+        "👋 Welcome!\n\n"
+        "To save a ZIP:\n"
+        "`/save keyname` and then upload your zip file.\n\n"
+        "Other commands:\n"
+        "/list - show saved files\n"
+        "/delete keyname - delete a saved file",
+        parse_mode="Markdown"
+    )
 
-# --- Save file ---
+# Step 1: Ask for keyname
 @bot.message_handler(commands=['save'])
-def save_file(message):
-    parts = message.text.split()
-    if len(parts) < 2:
-        bot.reply_to(message, "⚠️ Usage: /save <key>")
+def save_command(message):
+    try:
+        keyname = message.text.split(maxsplit=1)[1]
+    except IndexError:
+        bot.reply_to(message, "❌ Usage: /save keyname")
         return
-    key = parts[1]
-    bot.reply_to(message, f"📩 Now send me the ZIP file for key: {key}")
-    bot.register_next_step_handler(message, lambda m: receive_file(m, key))
 
-def receive_file(message, key):
-    if not message.document:
-        bot.reply_to(message, "⚠️ Please send a ZIP file.")
+    bot.reply_to(message, f"📂 Now send me the ZIP file for `{keyname}`", parse_mode="Markdown")
+
+    # Register next step handler
+    bot.register_next_step_handler(message, lambda msg: save_file(msg, keyname))
+
+# Step 2: Save file
+def save_file(message, keyname):
+    if not message.document or not message.document.file_name.endswith(".zip"):
+        bot.reply_to(message, "❌ Please send a valid ZIP file.")
         return
+
     file_id = message.document.file_id
-    saved_files[key] = file_id
-    save_index()
-    bot.reply_to(message, f"✅ File saved with key: {key}")
+    files_db[keyname] = file_id
 
-# --- List files ---
-@bot.message_handler(commands=['list'])
-def list_files(message):
-    if not saved_files:
-        bot.reply_to(message, "📂 No files saved yet.")
-    else:
-        keys = "\n".join(saved_files.keys())
-        bot.reply_to(message, f"📂 Saved keys:\n{keys}")
+    link = f"https://t.me/{bot.get_me().username}?start={keyname}"
+    bot.reply_to(message, f"✅ File saved as `{keyname}`\n🔗 Link: {link}", parse_mode="Markdown")
 
-# --- Get file ---
-@bot.message_handler(commands=['get'])
-def get_file(message):
-    parts = message.text.split()
-    if len(parts) < 2:
-        bot.reply_to(message, "⚠️ Usage: /get <key>")
-        return
-    key = parts[1]
-    if key in saved_files:
-        bot.send_document(message.chat.id, saved_files[key])
+# Handle deep-linking
+@bot.message_handler(func=lambda m: m.text and m.text.startswith("/start "))
+def send_file(message):
+    keyname = message.text.split(maxsplit=1)[1]
+    if keyname in files_db:
+        bot.send_document(message.chat.id, files_db[keyname], caption=f"📦 Here is `{keyname}`", parse_mode="Markdown")
     else:
         bot.reply_to(message, "❌ File not found.")
 
-# --- Delete file ---
+# List saved files
+@bot.message_handler(commands=['list'])
+def list_files(message):
+    if not files_db:
+        bot.reply_to(message, "📭 No files saved.")
+    else:
+        file_list = "\n".join([f"- {k}" for k in files_db.keys()])
+        bot.reply_to(message, f"📂 Saved files:\n{file_list}")
+
+# Delete a file
 @bot.message_handler(commands=['delete'])
 def delete_file(message):
-    parts = message.text.split()
-    if len(parts) < 2:
-        bot.reply_to(message, "⚠️ Usage: /delete <key>")
+    try:
+        keyname = message.text.split(maxsplit=1)[1]
+    except IndexError:
+        bot.reply_to(message, "❌ Usage: /delete keyname")
         return
-    key = parts[1]
-    if key in saved_files:
-        del saved_files[key]
-        save_index()
-        bot.reply_to(message, f"🗑 File with key '{key}' deleted.")
-    else:
-        bot.reply_to(message, "❌ Key not found.")
 
-# --- Run bot ---
-print("🤖 Bot is running...")
-bot.infinity_polling()
+    if keyname in files_db:
+        del files_db[keyname]
+        bot.reply_to(message, f"🗑️ Deleted `{keyname}`", parse_mode="Markdown")
+    else:
+        bot.reply_to(message, "❌ File not found.")
+
+# --- FLASK SERVER (keep-alive on Render) ---
+@app.route('/')
+def home():
+    return "Bot is running fine on Render!"
+
+# --- RUN BOTH BOT + FLASK ---
+if __name__ == "__main__":
+    import threading
+
+    def run_bot():
+        print("🤖 Bot polling started...")
+        bot.infinity_polling(timeout=60, long_polling_timeout=30)
+
+    def run_flask():
+        port = int(os.environ.get("PORT", 10000))
+        app.run(host="0.0.0.0", port=port)
+
+    threading.Thread(target=run_bot).start()
+    run_flask()
 

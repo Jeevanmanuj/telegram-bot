@@ -3,7 +3,9 @@ import json
 import os
 
 # 🔹 Replace with your bot token
-BOT_TOKEN = "YOUR_BOT_TOKEN"
+import os
+TOKEN = os.getenv("BOT_TOKEN")
+
 bot = telebot.TeleBot(BOT_TOKEN)
 
 INDEX_FILE = "file_index.json"
@@ -91,3 +93,4 @@ def delete_file(message):
 # --- Run bot ---
 print("🤖 Bot is running...")
 bot.infinity_polling()
+

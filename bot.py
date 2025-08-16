@@ -8,29 +8,75 @@ RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL")
 bot = telebot.TeleBot(BOT_TOKEN)
 server = Flask(__name__)
 
+# Dictionary to store keyname → link
+storage = {}
+
 # /start command
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "Welcome! Send /save <keyname> and then upload a ZIP file.")
+    bot.reply_to(message,
+                 "Welcome! 👋\n\n"
+                 "Commands:\n"
+                 "/save <keyname> → Upload a ZIP and save\n"
+                 "/list → Show saved keys\n"
+                 "/delete <keyname> → Remove a saved key\n")
 
 # /save command
 @bot.message_handler(commands=['save'])
 def save(message):
     try:
         keyname = message.text.split(" ", 1)[1]
-        bot.reply_to(message, f"Great! Now send me the ZIP file for '{keyname}'.")
+        # Temporarily store user’s state (key they want to save under)
+        storage[message.chat.id] = {"key": keyname}
+        bot.reply_to(message, f"Okay! Now send me the ZIP file for '{keyname}'.")
     except IndexError:
-        bot.reply_to(message, "Usage: /save keyname")
+        bot.reply_to(message, "⚠️ Usage: /save keyname")
 
 # ZIP file handler
 @bot.message_handler(content_types=['document'])
 def handle_docs(message):
     if message.document.mime_type == "application/zip":
+        user_state = storage.get(message.chat.id)
+        if not user_state or "key" not in user_state:
+            bot.reply_to(message, "⚠️ First use /save <keyname> before sending the ZIP.")
+            return
+
+        keyname = user_state["key"]
         file_info = bot.get_file(message.document.file_id)
         file_link = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
-        bot.reply_to(message, f"Here’s your download link:\n{file_link}")
+
+        # Save link under the chosen key
+        storage[keyname] = file_link
+        storage.pop(message.chat.id, None)  # clear temp state
+
+        bot.reply_to(message, f"✅ Saved! Access it anytime with:\n{file_link}")
     else:
-        bot.reply_to(message, "Please upload a ZIP file.")
+        bot.reply_to(message, "⚠️ Please upload a valid ZIP file.")
+
+# /list command
+@bot.message_handler(commands=['list'])
+def list_files(message):
+    if not storage:
+        bot.reply_to(message, "📂 No files saved yet.")
+        return
+    response = "📂 Saved files:\n"
+    for key, link in storage.items():
+        if isinstance(link, str):  # skip temp states
+            response += f"🔑 {key} → {link}\n"
+    bot.reply_to(message, response)
+
+# /delete command
+@bot.message_handler(commands=['delete'])
+def delete(message):
+    try:
+        keyname = message.text.split(" ", 1)[1]
+        if keyname in storage:
+            del storage[keyname]
+            bot.reply_to(message, f"🗑️ Deleted '{keyname}'.")
+        else:
+            bot.reply_to(message, f"⚠️ No file found with key '{keyname}'.")
+    except IndexError:
+        bot.reply_to(message, "⚠️ Usage: /delete keyname")
 
 # Flask webhook route
 @server.route(f"/{BOT_TOKEN}", methods=['POST'])

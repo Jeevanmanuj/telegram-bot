@@ -67,7 +67,11 @@ def webhook():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    WEBHOOK_URL = f"https://{os.environ.get('RENDER_EXTERNAL_URL')}/{BOT_TOKEN}"
+   RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL")
+if not RENDER_URL:
+    raise ValueError("RENDER_EXTERNAL_URL is not set in environment variables!")
+
+WEBHOOK_URL = f"{RENDER_URL}/{BOT_TOKEN}"
 
     # Remove old webhook before setting new one
     bot.remove_webhook()
@@ -75,4 +79,5 @@ if __name__ == "__main__":
 
     print(f"🤖 Webhook set to {WEBHOOK_URL}")
     app.run(host="0.0.0.0", port=port)
+
 

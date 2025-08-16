@@ -1,108 +1,78 @@
 import os
 import telebot
-from telebot import types
-from flask import Flask
+from flask import Flask, request
 
-# Get token from environment variable
+# Get bot token from environment variable
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN is not set in environment variables!")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# In-memory store (dictionary)
-files_db = {}
+# Store keyname temporarily until file is uploaded
+user_keys = {}
 
-# --- BOT COMMANDS ---
+# Command: /save keyname
+@bot.message_handler(commands=['save'])
+def save_key(message):
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ Usage: /save <keyname>")
+        return
+    keyname = parts[1].strip()
+    user_keys[message.from_user.id] = keyname
+    bot.reply_to(message, f"✅ Keyname saved: `{keyname}`\nNow send me a ZIP file.", parse_mode="Markdown")
 
-@bot.message_handler(commands=['start'])
-def start(message):
+# Handle ZIP upload
+@bot.message_handler(content_types=['document'])
+def handle_zip(message):
+    if message.document.mime_type != "application/zip":
+        bot.reply_to(message, "❌ Please upload a valid ZIP file.")
+        return
+
+    user_id = message.from_user.id
+    if user_id not in user_keys:
+        bot.reply_to(message, "⚠️ Please set a keyname first using `/save keyname`.")
+        return
+
+    keyname = user_keys[user_id]
+
+    # Get Telegram file_id (this stays permanent on Telegram servers)
+    file_id = message.document.file_id
+
+    # Generate a direct link format
+    file_link = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_id}"
+
     bot.reply_to(
         message,
-        "👋 Welcome!\n\n"
-        "To save a ZIP:\n"
-        "`/save keyname` and then upload your zip file.\n\n"
-        "Other commands:\n"
-        "/list - show saved files\n"
-        "/delete keyname - delete a saved file",
+        f"✅ Your file has been saved!\n\n🔑 Key: `{keyname}`\n📂 File Link: {file_link}",
         parse_mode="Markdown"
     )
 
-# Step 1: Ask for keyname
-@bot.message_handler(commands=['save'])
-def save_command(message):
-    try:
-        keyname = message.text.split(maxsplit=1)[1]
-    except IndexError:
-        bot.reply_to(message, "❌ Usage: /save keyname")
-        return
+    # Clear keyname for next time
+    del user_keys[user_id]
 
-    bot.reply_to(message, f"📂 Now send me the ZIP file for `{keyname}`", parse_mode="Markdown")
-
-    # Register next step handler
-    bot.register_next_step_handler(message, lambda msg: save_file(msg, keyname))
-
-# Step 2: Save file
-def save_file(message, keyname):
-    if not message.document or not message.document.file_name.endswith(".zip"):
-        bot.reply_to(message, "❌ Please send a valid ZIP file.")
-        return
-
-    file_id = message.document.file_id
-    files_db[keyname] = file_id
-
-    link = f"https://t.me/{bot.get_me().username}?start={keyname}"
-    bot.reply_to(message, f"✅ File saved as `{keyname}`\n🔗 Link: {link}", parse_mode="Markdown")
-
-# Handle deep-linking
-@bot.message_handler(func=lambda m: m.text and m.text.startswith("/start "))
-def send_file(message):
-    keyname = message.text.split(maxsplit=1)[1]
-    if keyname in files_db:
-        bot.send_document(message.chat.id, files_db[keyname], caption=f"📦 Here is `{keyname}`", parse_mode="Markdown")
-    else:
-        bot.reply_to(message, "❌ File not found.")
-
-# List saved files
-@bot.message_handler(commands=['list'])
-def list_files(message):
-    if not files_db:
-        bot.reply_to(message, "📭 No files saved.")
-    else:
-        file_list = "\n".join([f"- {k}" for k in files_db.keys()])
-        bot.reply_to(message, f"📂 Saved files:\n{file_list}")
-
-# Delete a file
-@bot.message_handler(commands=['delete'])
-def delete_file(message):
-    try:
-        keyname = message.text.split(maxsplit=1)[1]
-    except IndexError:
-        bot.reply_to(message, "❌ Usage: /delete keyname")
-        return
-
-    if keyname in files_db:
-        del files_db[keyname]
-        bot.reply_to(message, f"🗑️ Deleted `{keyname}`", parse_mode="Markdown")
-    else:
-        bot.reply_to(message, "❌ File not found.")
-
-# --- FLASK SERVER (keep-alive on Render) ---
-@app.route('/')
+# Root route to check server
+@app.route("/", methods=['GET'])
 def home():
-    return "Bot is running fine on Render!"
+    return "🤖 Bot is running with Webhook!", 200
 
-# --- RUN BOTH BOT + FLASK ---
+# Webhook route
+@app.route(f'/{BOT_TOKEN}', methods=['POST'])
+def webhook():
+    update = telebot.types.Update.de_json(request.stream.read().decode("utf-8"))
+    bot.process_new_updates([update])
+    return "OK", 200
+
 if __name__ == "__main__":
-    import threading
+    port = int(os.environ.get("PORT", 10000))
+    WEBHOOK_URL = f"https://{os.environ.get('RENDER_EXTERNAL_URL')}/{BOT_TOKEN}"
 
-    def run_bot():
-        print("🤖 Bot polling started...")
-        bot.infinity_polling(timeout=60, long_polling_timeout=30)
+    # Remove old webhook before setting new one
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
 
-    def run_flask():
-        port = int(os.environ.get("PORT", 10000))
-        app.run(host="0.0.0.0", port=port)
-
-    threading.Thread(target=run_bot).start()
-    run_flask()
+    print(f"🤖 Webhook set to {WEBHOOK_URL}")
+    app.run(host="0.0.0.0", port=port)
 
